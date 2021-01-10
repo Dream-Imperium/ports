@@ -1,0 +1,53 @@
+#!/bin/rc
+#
+. $PORTS/mk/meth/cfg.rc
+
+if (test -z $CONFIGURE) CONFIGURE='./configure'
+OBDIR=true
+
+switch ($PORTSYS_MK_FLAGS) {
+case *'nobuilddir'*
+	OBDIR=false
+}
+
+if ($OBDIR) {
+	dir=$"PORTSYS_TMP_BUILDDIR
+	mkdir $dir >[2]/dev/null ||;
+	cd $dir
+	CONFIGURE='../'$CONFIGURE
+}
+
+if ($static) {
+	static=yes
+	shared=no
+}; if not {
+	static=no
+	shared=yes
+}
+
+if (test -f AUTOHELL@DONE) {
+	make -- DESTDIR'='$"DESTDIR $*
+}; if not @{
+	if (! test -n $"PREFIX) PREFIX='/'
+	chmod +x $CONFIGURE
+	env -i -- $PORTSYS_METH_ENV    \
+	    $CONFIGURE                 \
+	    --prefix'='$"PREFIX        \
+	    --bindir'='$"BINDIR        \
+	    --sbindir'='$"BINDIR       \
+	    --libdir'='$"LIBDIR        \
+	    --includedir'='$"INCDIR    \
+	    --oldincludedir'='$"INCDIR \
+	    --datarootdir'='$"DRTDIR   \
+	    --mandir'='$"MANDIR        \
+	    --enable-shared'='$"shared \
+	    --enable-static'='$"static \
+	    $PORTSYS_METH_FLAGS
+	touch AUTOHELL@DONE
+	if (~ $#* 0) exit
+	if (test -f 'libtool' && ~ $"static 'yes') {
+		_L=($_L -all-static)
+		make -- DESTDIR'='$"DESTDIR LDFLAGS'='$"_L $*
+	}
+	if not make -- DESTDIR'='$"DESTDIR $*
+}

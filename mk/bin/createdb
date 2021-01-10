@@ -1,0 +1,44 @@
+#!/bin/rc -e
+# $1: file
+# $2: desc
+if (! test -s $1) exit 0
+# header
+if (! ~ $2 '') description=$"description' '$2
+size=`{$PORTS/mk/bin/install -n <$1}
+tmp=`{mktemp}
+cat <<EOF >$tmp
+name:$name
+version:$version
+license:$license
+description:$description
+size:$size
+EOF
+# rdeps
+if (! ~ $#rdeps 0) {
+	echo 'rdeps{'
+	for (dep in $rdeps) printf '\t%s\n' $dep
+	echo '}'
+} >> $tmp
+# mdeps
+# TODO: move dynamic mdeps to rdeps
+if (! ~ $#mdeps 0) {
+	echo 'mdeps{'
+	for (dep in $mdeps) {
+		d=$dep'-dev'
+		dir=$SYSPATH$DBDIR
+		if (! test -e $dir/$d) v=`{$PORTS/mk/bin/dbman -k version $dep}
+		if not v=`{$SED -n 's/version://p' $dir/$d}
+		dep=$d'#'$v
+		printf '\t%s\n' $dep
+	}
+	echo '}'
+} >> $tmp
+# files
+{
+echo 'files{'
+xargs venus-cksum <$1 | sed 's;^;	;g'
+echo '}'
+} >> $tmp
+# gen
+target=$"name
+mv $tmp $TDBDIR/$target

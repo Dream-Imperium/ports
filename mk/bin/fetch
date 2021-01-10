@@ -1,0 +1,38 @@
+#!/bin/rc -e
+# $1 : tmp file
+# $* : url list (protocol url)
+. $PORTS/mk/config.rc
+. $PORTS/mk/io.rc
+tmp=$1
+shift
+@{ for (url in $*) {
+	shift
+	switch ($url) {
+	case 'git'
+		url=$1
+		shift
+		git clone $url $src
+		@{ olddir=`{pwd}
+		cd $src
+		git checkout tags/v$version }
+		exit
+	case *
+		file=`{basename $url}
+		target=$CACHEDIR'/'$file
+		if (test -f $target) {
+			echo $target > $tmp
+			exit
+		}
+		$FETCH $url && {
+			echo $target > $tmp
+			mv $file $target
+			exit
+		}
+	}
+}} ||;
+if (test -z $cksum) {
+	file=`{cat $tmp}
+	fsum=`{$CKSUM $file}
+	if (! ~ $cksum $fsum) error $file: checksum mismatch
+}
+true # only god knows why

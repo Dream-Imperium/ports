@@ -1,0 +1,41 @@
+#!/bin/rc -e
+if (test -z $PORTS) {
+	echo '<error>' $0: missing PORTS environmental variable >[1=2]
+	exit 1
+}
+true # only god knows why
+argv0=$0
+. $PORTS/mk/config.rc
+. $PORTS/mk/io.rc
+
+message creating temporary environment...
+tmpfile=`{mktemp}
+tmpdir=`{mktemp -d}
+fn sigexit {
+	rm -Rf $tmpfile $tmpfile.out $tmpdir
+}
+
+message checking for vanilla...
+cat <<EOF >$tmpfile
+#include <vanilla/cpu.h>
+#include <vanilla/std.h>
+ctype_status main(int argc, char **argv) { c_std_exit(0); }
+EOF
+PORTSYS_ROOTPWD=''
+$CC $CFLAGS $CPPFLAGS $LDFLAGS -o $tmpfile.out $tmpfile -lvanilla || {
+	warning vanilla not found
+	message bootstrapping vanilla...
+	dir='vanilla-1.0.0'
+	@{ cd $tmpdir
+	$FETCH http://dreamimperium.cf/bin/vanilla/$dir.tar.gz
+	$UGZ $dir.tar.gz | $UNTAR
+	cd $dir
+	CFLAGS=($CFLAGS -fno-builtin)
+	ARCH=`{uname -m}
+	OS=`{uname -s | tr '[A-Z]' '[a-z]'}
+	$PORTS/mk/utils/portmk -f replace make OSNAME'='$"OS OBJTYPE'='$"ARCH }
+	CPPFLAGS=($CPPFLAGS -I$tmpdir/$dir/inc)
+	LDFLAGS=($LDFLAGS -L$tmpdir/$dir/lib)
+}
+message bootstraping ports tools...
+$PORTS/mk/utils/portmk make bootstrap

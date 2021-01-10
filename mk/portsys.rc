@@ -1,0 +1,217 @@
+#!/bin/rc -e
+
+if (test -z $PORTS) {
+	echo '<error>' $0: missing PORTS environmental variable >[1=2]
+	exit 1
+}
+true # only god knows why
+argv0=$0
+. $PORTS/mk/config.rc
+. $PORTS/mk/io.rc
+
+repos=`{ls $PORTS/pkg}
+if (~ $#repos 0) error no repositories found
+
+if (~ $#* 0) {
+	warning no arguments given
+	warning aborting...
+	exit 0
+}
+
+switch ($1) {
+case package
+	mk='pack'
+case install
+	mk='install'
+case *
+	error unknown action
+}
+shift
+
+# path vars
+EXTRAINC=()
+EXTRALIB=()
+CACHEDIR=''
+PKGPATH=''
+SYSPATH=''
+
+# flags
+bflag='false'
+dflag='false'
+kflag='false'
+mflag='false'
+sflag='false'
+uflag='false'
+
+while (~ $1 -*) {
+	for (opt in `{printf '%s' $1 | fold -w1}) switch($opt) {
+	case A
+		bflag='true'
+		dflag='true'
+		mflag='true'
+		sflag='true'
+	case B
+		bflag='true'
+	case D
+		dflag='true'
+	case M
+		mflag='true'
+	case S
+		sflag='true'
+	case d
+		if (test -z $2) error no cache directory given
+		message using cache directory
+		CACHEDIR=$2
+		shift
+	case e
+		if (test -z $2) error no directory given
+		message using a extra directory
+		EXTRAINC=($EXTRAINC '-I'$2$"INCDIR)
+		EXTRALIB=($EXTRALIB '-L'$2$"LIBDIR)
+		shift
+	case k
+		message preserving dependencies
+		kflag='true'
+	case p
+		if (test -z $2) error no directory given
+		PKGPATH=$2
+		shift
+	case r
+		if (test -z $2) error no directory given
+		message alternative root directory set
+		SYSPATH=$2
+		shift
+	case u
+		uflag='true'
+	case -
+		;
+	case *
+		error $opt unknown flag
+	}
+	shift
+}
+
+if (!$bflag && !$dflag && !$mflag && !$sflag) {
+	warning no flags given
+	warning aborting...
+	exit 0
+}
+
+# portsys vars set1
+WRKDIR=`{mktemp -dt PORTSYS@XXXXXXXXX}
+PORTSYS_PKGDIR=$WRKDIR/pkgroot
+PORTSYS_ROOTPWD=$WRKDIR/tmproot
+PORTSYS_HOSTOS=`{uname -s | $AWK '{print(tolower($0))}'}
+PORTSYS_HOSTARCH=`{uname -m}
+
+# portsys vars set2
+PWD=`{pwd}
+if (test -z $PKGPATH) PKGPATH=$PWD/portsys_pkgs
+{ ~ $mk 'pack' } && TDBDIR=$PKGPATH || TDBDIR=$SYSPATH$DBDIR
+if (! test -d $TDBDIR) mkdir -p $TDBDIR
+if (test -z $"CACHEDIR) CACHEDIR=$PWD/portsys_cache
+if (! test -d $CACHEDIR) mkdir $CACHEDIR
+
+CPPFLAGS=($CPPFLAGS $EXTRAINC '-I'$PORTSYS_ROOTPWD$INCDIR '-I'$SYSPATH$INCDIR)
+LDFLAGS=($LDFLAGS $EXTRALIB '-L'$PORTSYS_ROOTPWD$LIBDIR '-L'$SYSPATH$LIBDIR)
+
+# tmp env fuctions
+fn sigexit {
+	rm -Rf $WRKDIR
+}
+
+fn getsrc {
+	dir=`{$PORTS/mk/bin/dbman -k src $1}
+	if (! ~ $dir '<nil>') {
+		echo -n $dir
+	}; if not {
+		name=`{$PORTS/mk/bin/dbman -k name $1}
+		version=`{$PORTS/mk/bin/dbman -k version $1}
+		echo -n $name-$version
+	}
+}
+
+# current deps as flags
+if ($uflag || ! test -f $PORTS/pkg/cache.cdb) $PORTS/mk/bin/dbman -u
+args=`{$PORTS/mk/bin/dbman -a $*} || error failed to generate args list
+deplist=`{$PORTS/mk/bin/dbman -d $*} || error failed to generate deps list
+
+# stage1: fetch, explode, patch
+for (pkg in $args) {
+	cd $WRKDIR
+	message $pkg: fetching...
+	cksum=`{$PORTS/mk/bin/dbman -k cksum $pkg}
+	mirrors=`{$PORTS/mk/bin/dbman -t mirrors $pkg}
+	version=`{$PORTS/mk/bin/dbman -k version $pkg}
+	src=`{getsrc $pkg}
+	tmp=`{mktemp -p $WRKDIR}
+	$PORTS/mk/bin/fetch $tmp $mirrors
+	message $pkg: exploding...
+	$PORTS/mk/bin/explode $tmp
+	message $pkg: patching...
+	dir=`{$PORTS/mk/bin/dbman $pkg}
+	patches=`{$PORTS/mk/bin/dbman -t patches $pkg}
+	@{ cd $src
+	for (p in $patches) patch -p1 < $dir/patches/$p }
+}
+
+# stage2: building
+for (pkg in $args) {
+	dir=`{getsrc $pkg}
+	cd $WRKDIR/$dir
+	message $pkg: building...
+	@{ PORTSYS_TMP_BUILDDIR=`{mktemp -u 'PORTSYS@XXXXXXXXX'}
+	PATH=$PATH:$PORTS/mk/utils
+	dir=`{$PORTS/mk/bin/dbman $pkg}
+	name=`{$PORTS/mk/bin/dbman -k name $pkg}
+	@{ DESTDIR=$WRKDIR/pkgroot/$name
+	$dir/build
+	cd $DESTDIR
+	message $pkg: preparing...
+	$PORTS/mk/bin/prepare
+	# copy dev files in a single dir
+	$PORTS/mk/bin/list
+	@{ SYSPATH=$WRKDIR/tmproot
+	$PORTS/mk/bin/install -c <INSTALL@DEV } } }
+}
+
+# stage3: install/pack, generate db files
+if (! $kflag) args=$*
+for (pkg in $args) {
+	name=`{$PORTS/mk/bin/dbman -k name $pkg}
+	cd $WRKDIR/pkgroot/$name
+	message $pkg: installing and creating database entries...
+	version=`{$PORTS/mk/bin/dbman -k version $pkg}
+	license=`{$PORTS/mk/bin/dbman -k license $pkg}
+	description=`{$PORTS/mk/bin/dbman -k description $pkg}
+	mdeps=`{$PORTS/mk/bin/dbman -t mdeps $pkg}
+	rdeps=`{$PORTS/mk/bin/dbman -t rdeps $pkg}
+	if ($bflag) {
+		$PORTS/mk/bin/createdb INSTALL@DEF
+		$PORTS/mk/bin/$mk INSTALL@DEF
+		if ($mflag) @{
+			rdeps=()
+			mdeps=()
+			name=$name'-man'
+			$PORTS/mk/bin/createdb INSTALL@MAN '<MANPAGES>'
+			$PORTS/mk/bin/$mk INSTALL@MAN
+		}
+	}
+	if ($dflag) {
+		name=$name'-dev'
+		$PORTS/mk/bin/createdb INSTALL@DEV '<DEVELOPMENT>'
+		$PORTS/mk/bin/$mk INSTALL@DEV
+		if ($mflag) @{
+			rdeps=()
+			mdeps=()
+			name=$name'-devman'
+			$PORTS/mk/bin/createdb INSTALL@DEVMAN '<DEVELOPMENT MANPAGES>'
+			$PORTS/mk/bin/$mk INSTALL@DEVMAN
+		}
+	}
+	if ($sflag) {
+		name=$name'-dynlib'
+		$PORTS/mk/bin/createdb INSTALL@DYNLIB '<DYNAMIC LIBRARIES>'
+		$PORTS/mk/bin/$mk INSTALL@DYNLIB
+	}
+}
